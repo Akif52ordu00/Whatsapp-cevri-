@@ -16,14 +16,16 @@ const CONTACTS_FILE = path.join(__dirname, 'contacts.json');
 const SESSION_STATE_FILE = path.join(__dirname, 'session_state.json');
 
 // Çeviri Fonksiyonu (Google Translate - Anahtar GEREKTİRMEZ)
-async function translate(text, from = 'tr', to = 'en') {
+async function translate(text, from = 'auto', to = 'en') {
     try {
         const result = await googleTranslate(text, { from, to });
-        return result.text;
+        let detected = result.from?.language?.iso || from;
+        if (detected === 'auto') detected = 'bilinmeyen';
+        return { text: result.text, lang: detected };
     } catch (error) {
         console.error('\n❌ Çeviri Hatası (Google Translate):');
         console.error(`- Mesaj: ${error.message}`);
-        return `[Hata: Çeviri yapılamadı] ${text}`;
+        return { text: `[Hata: Çeviri yapılamadı] ${text}`, lang: 'error' };
     }
 }
 
@@ -57,10 +59,10 @@ function loadSessionState() {
     try {
         if (fs.existsSync(SESSION_STATE_FILE)) {
             const data = fs.readFileSync(SESSION_STATE_FILE, 'utf8');
-            return data ? JSON.parse(data) : { selectedContact: null };
+            return data ? JSON.parse(data) : { selectedContact: null, targetLanguage: 'en' };
         }
     } catch (e) { }
-    return { selectedContact: null };
+    return { selectedContact: null, targetLanguage: 'en' };
 }
 
 // Oturum durumunu kaydet
@@ -68,9 +70,19 @@ function saveSessionState(state) {
     fs.writeFileSync(SESSION_STATE_FILE, JSON.stringify(state, null, 2));
 }
 
+const SUPPORTED_LANGS = {
+    'en': 'İngilizce',
+    'ru': 'Rusça',
+    'de': 'Almanca',
+    'it': 'İtalyanca',
+    'es': 'İspanyolca',
+    'tr': 'Türkçe'
+};
+
 let contacts = loadContacts();
 let sessionState = loadSessionState();
 let selectedContact = sessionState.selectedContact;
+let targetLanguage = sessionState.targetLanguage || 'en';
 
 // WhatsApp Client'ı başlat
 const client = new Client({
@@ -79,7 +91,13 @@ const client = new Client({
     }),
     puppeteer: {
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-gpu',
+            '--disable-dev-shm-usage',
+            '--no-zygote'
+        ]
     }
 });
 
@@ -106,7 +124,9 @@ client.on('ready', () => {
     console.log('2. Listele -> list');
     console.log('3. Seç     -> select | isim');
     console.log('4. Bırak   -> unselect');
-    console.log('5. Gönder  -> isim | mesaj  VEYA  sadece mesaj (eğer bir kişi seçiliyse)');
+    console.log(`5. Dil     -> lang | [en/ru/de/it/es/tr] (Mevcut: ${SUPPORTED_LANGS[targetLanguage] || targetLanguage})`);
+    console.log('6. Gönder  -> isim | mesaj  VEYA  sadece mesaj (eğer bir kişi seçiliyse)');
+    console.log('7. Yenile  -> f5');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
     if (selectedContact) {
@@ -115,11 +135,30 @@ client.on('ready', () => {
         const askContinuation = () => {
             rl.question(`❓ Bu kişiyle devam etmek istiyor musunuz? (y/d): `, (answer) => {
                 const choice = answer.trim().toLowerCase();
-                if (choice === 'd' || choice === 'devam' || choice === 'yes' || choice === 'evet') {
+                if (choice === 'f5') {
+                    console.clear();
+                    contacts = loadContacts();
+                    selectedContact = null;
+                    sessionState.selectedContact = null;
+                    saveSessionState(sessionState);
+                    console.log('✅ Ekran temizlendi, rehber yeniden yüklendi ve seçimler sıfırlandı.\n');
+
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    console.log('💬 KOMUTLAR:');
+                    console.log('1. Ekle   -> add | numara | isim');
+                    console.log('2. Listele -> list');
+                    console.log('3. Seç     -> select | isim');
+                    console.log('4. Bırak   -> unselect');
+                    console.log(`5. Dil     -> lang | [en/ru/de/it/es/tr] (Mevcut: ${SUPPORTED_LANGS[targetLanguage] || targetLanguage})`);
+                    console.log('6. Gönder  -> isim | mesaj  VEYA  sadece mesaj (eğer bir kişi seçiliyse)');
+                    console.log('7. Yenile  -> f5');
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+                } else if (choice === 'd' || choice === 'devam' || choice === 'yes' || choice === 'evet') {
                     console.log(`✅ ${selectedContact.toUpperCase()} ile devam ediliyor.`);
                 } else {
                     selectedContact = null;
-                    saveSessionState({ selectedContact: null });
+                    sessionState.selectedContact = null;
+                    saveSessionState(sessionState);
                     console.log('🔓 Kişi seçimi iptal edildi. Yeni bir komut giriniz.');
                 }
                 startListening();
@@ -168,7 +207,8 @@ client.on('ready', () => {
                     if (index >= 0 && index < entries.length) {
                         const [targetName] = entries[index];
                         selectedContact = targetName;
-                        saveSessionState({ selectedContact });
+                        sessionState.selectedContact = selectedContact;
+                        saveSessionState(sessionState);
                         console.log(`📌 AKTİF KİŞİ SEÇİLDİ: ${targetName.toUpperCase()}`);
                     } else {
                         console.log('❌ Geçersiz sıra numarası.');
@@ -181,7 +221,8 @@ client.on('ready', () => {
                     const targetName = parts[1].toLowerCase();
                     if (contacts[targetName]) {
                         selectedContact = targetName;
-                        saveSessionState({ selectedContact });
+                        sessionState.selectedContact = selectedContact;
+                        saveSessionState(sessionState);
                         console.log(`📌 AKTİF KİŞİ SEÇİLDİ: ${targetName.toUpperCase()}`);
                     } else {
                         console.log(`❌ "${targetName}" ismi rehberde bulunamadı!`);
@@ -192,12 +233,27 @@ client.on('ready', () => {
                 // 4. SEÇİMİ İPTAL ETME
                 if (parts[0].toLowerCase() === 'unselect') {
                     selectedContact = null;
-                    saveSessionState({ selectedContact: null });
+                    sessionState.selectedContact = null;
+                    saveSessionState(sessionState);
                     console.log('🔓 Kişi seçimi iptal edildi.');
                     return;
                 }
 
-                // 5. GÖNDERME
+                // 5. DİL SEÇİMİ
+                if (parts[0].toLowerCase() === 'lang' && parts.length === 2) {
+                    const lang = parts[1].toLowerCase();
+                    if (SUPPORTED_LANGS[lang]) {
+                        targetLanguage = lang;
+                        sessionState.targetLanguage = targetLanguage;
+                        saveSessionState(sessionState);
+                        console.log(`✅ Hedef dil değiştirildi: ${SUPPORTED_LANGS[lang]} (${lang})`);
+                    } else {
+                        console.log(`❌ Geçersiz dil kodu. Desteklenenler: ${Object.keys(SUPPORTED_LANGS).join(', ')}`);
+                    }
+                    return;
+                }
+
+                // 6. GÖNDERME
                 if (parts.length === 2 || (parts.length === 1 && selectedContact)) {
                     let targetName, text;
 
@@ -208,7 +264,8 @@ client.on('ready', () => {
                         // Otomatik Seçme: Eğer bir isme direkt mesaj atıldıysa, o kişiyi aktif seçili yap
                         if (contacts[targetName] && selectedContact !== targetName) {
                             selectedContact = targetName;
-                            saveSessionState({ selectedContact });
+                            sessionState.selectedContact = selectedContact;
+                            saveSessionState(sessionState);
                             console.log(`📌 OTOMATİK SEÇİLDİ: ${targetName.toUpperCase()}`);
                         }
                     } else {
@@ -216,7 +273,7 @@ client.on('ready', () => {
                         text = parts[0];
                     }
 
-                    if (targetName === 'add' || targetName === 'list' || targetName === 'select' || targetName === 'unselect') return;
+                    if (targetName === 'add' || targetName === 'list' || targetName === 'select' || targetName === 'unselect' || targetName === 'lang' || targetName === 'f5') return;
 
                     const phoneNumber = contacts[targetName];
                     if (!phoneNumber) {
@@ -224,10 +281,32 @@ client.on('ready', () => {
                         return;
                     }
 
-                    const translated = await translate(text);
+                    const { text: translatedText } = await translate(text, 'auto', targetLanguage);
                     const chatId = `${phoneNumber}@c.us`;
-                    await client.sendMessage(chatId, translated);
-                    console.log(`📤 ${targetName.toUpperCase()} kişisine gönderildi: ${translated}`);
+                    await client.sendMessage(chatId, translatedText);
+                    console.log(`📤 ${targetName.toUpperCase()} kişisine gönderildi (${targetLanguage.toUpperCase()}): ${translatedText}\n`);
+                    return;
+                }
+
+                // 7. YENİLE (F5)
+                if (parts[0].toLowerCase() === 'f5') {
+                    console.clear();
+                    contacts = loadContacts();
+                    selectedContact = null;
+                    sessionState.selectedContact = null;
+                    saveSessionState(sessionState);
+                    console.log('✅ Ekran temizlendi, rehber yeniden yüklendi ve seçimler sıfırlandı.\n');
+
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                    console.log('💬 KOMUTLAR:');
+                    console.log('1. Ekle   -> add | numara | isim');
+                    console.log('2. Listele -> list');
+                    console.log('3. Seç     -> select | isim');
+                    console.log('4. Bırak   -> unselect');
+                    console.log(`5. Dil     -> lang | [en/ru/de/it/es/tr] (Mevcut: ${SUPPORTED_LANGS[targetLanguage] || targetLanguage})`);
+                    console.log('6. Gönder  -> isim | mesaj  VEYA  sadece mesaj (eğer bir kişi seçiliyse)');
+                    console.log('7. Yenile  -> f5');
+                    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
                     return;
                 }
 
@@ -306,10 +385,10 @@ client.on('message_create', async (message) => {
 
                 // Çevir
                 const isTurkish = /[çğıöşüÇĞİÖŞÜ]/.test(transcriptText);
-                const translated = await translate(transcriptText, isTurkish ? 'tr' : 'auto', isTurkish ? 'en' : 'tr');
+                const { text: translatedText } = await translate(transcriptText, 'auto', isTurkish ? targetLanguage : 'tr');
 
-                await chat.sendMessage(`🎙️ *Sesli Mesaj Çevirisi:*\n\n📝 *Orijinal:* ${transcriptText}\n\n🌐 *Çeviri:* ${translated}`);
-                console.log(`✨ SESLİ ÇEVİRİ TAMAMLANDI`);
+                await chat.sendMessage(`🎙️ *Sesli Mesaj Çevirisi:*\n\n📝 *Orijinal:* ${transcriptText}\n\n🌐 *Çeviri:* ${translatedText}`);
+                console.log(`✨ SESLİ ÇEVİRİ TAMAMLANDI\n`);
 
             } catch (error) {
                 console.error('❌ Sesli mesaj işleme hatası (Wit.ai):', error.response ? error.response.data : error.message);
@@ -323,17 +402,17 @@ client.on('message_create', async (message) => {
             // Kendi gönderdiğimiz Türkçe mesajları otomatik İngilizce'ye çevir
             const turkishChars = /[çğıöşüÇĞİÖŞÜ]/;
             if (turkishChars.test(message.body) && !message.body.startsWith('🌐')) {
-                const translated = await translate(message.body, 'tr', 'en');
+                const { text: translatedText } = await translate(message.body, 'auto', targetLanguage);
                 await message.delete(true);
-                await chat.sendMessage(translated);
-                console.log(`✨ OTO ÇEVİRİ (GİDEN - ${contactName.toUpperCase()}): ${translated}`);
+                await chat.sendMessage(translatedText);
+                console.log(`✨ OTO ÇEVİRİ (GİDEN - ${contactName.toUpperCase()}): ${translatedText}\n`);
             }
         } else {
             // Karşı taraftan gelen mesajı Türkçe'ye çevir (Eğer bir çeviri mesajı değilse)
             if (!message.body.startsWith('🌐')) {
-                const translated = await translate(message.body, 'auto', 'tr');
+                const { text: translatedText, lang: detectedLang } = await translate(message.body, 'auto', 'tr');
                 console.log(`📩 ${contactName.toUpperCase()}: ${message.body}`);
-                console.log(`✨ OTO ÇEVİRİ (GELEN): ${translated}`);
+                console.log(`✨ OTO ÇEVİRİ (GELEN) [Algılanan Dil: ${detectedLang}]: ${translatedText}\n`);
             }
         }
 

@@ -1,4 +1,4 @@
-# WhatsApp Çeviri Botu
+# WhatsApp Çeviri Botu (DeepL)
 
 Bu bot, WhatsApp üzerinden gönderdiğiniz Türkçe mesajları otomatik olarak **DeepL API** kullanarak İngilizceye çevirir.
 
@@ -33,4 +33,3 @@ Bot hazır olduğunda terminal üzerinden şu komutları kullanabilirsiniz:
 - `index.js`: Ana uygulama kodu
 - `contacts.json`: Kayıtlı kişilerin tutulduğu dosya
 - `package.json`: Bağımlılıklar (deepl-node, whatsapp-web.js vb.)
-
